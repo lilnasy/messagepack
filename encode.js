@@ -1,18 +1,26 @@
-// Copyright 2018-2024 the Deno authors. All rights reserved. MIT license.
-// This module is browser compatible.
-
-import { concat } from "./concat-bytes.js"
+/** @import { ValueType } from "./types.d.ts" */
 
 /**
- * Value types that can be encoded to MessagePack.
- * @typedef { number | bigint | string | boolean | null | Uint8Array | ValueMap } _ValueType
- * @typedef { _ValueType | readonly _ValueType[] } ValueType
+ * @typedef {[
+ *     bytes: Uint8Array,
+ *     offset: number,
+ *     dataview: DataView | null
+ * ]} EncodingContext
  */
 
+const bytes = 0
+const offset = 1
+const dataview = 2
+
 /**
- * Value map that can be encoded to MessagePack.
- * @typedef {Readonly<Record<string|number, ValueType>>} ValueMap
+ * @typedef {[
+ *     encoder: TextEncoder
+ *     stringbytes: Uint8Array
+ * ]} StringEncoderContext
  */
+
+/** @type { StringEncoderContext | null } */
+let stringencodercontext = null
 
 const FOUR_BITS = 16
 const FIVE_BITS = 32
@@ -24,8 +32,6 @@ const THIRTY_ONE_BITS = 2147483648
 const THIRTY_TWO_BITS = 4294967296
 const SIXTY_THREE_BITS = 9223372036854775808n
 const SIXTY_FOUR_BITS = 18446744073709551616n
-
-const encoder = new TextEncoder()
 
 /**
  * Encode a value to [MessagePack](https://msgpack.org/) binary format.
@@ -46,229 +52,299 @@ const encoder = new TextEncoder()
  * assertEquals(encoded.length, 31)
  * ```
  *
- * @param object Value to encode to MessagePack binary format.
+ * @param value Value to encode to MessagePack binary format.
  * @returns Encoded MessagePack binary data.
  */
-export function encode(/** @type ValueType */ object) {
-    /** @type Uint8Array[] */
-    const byteParts = []
-    encodeSlice(object, byteParts)
-    return concat(byteParts)
+export function encode(/** @type ValueType */ value) {
+    /** @type EncodingContext */
+    const context = [
+        new Uint8Array(new ArrayBuffer(4096, {
+            maxByteLength: 16 * 1024 * 1024
+        })),
+        0,
+        null
+    ]
+    encodeSlice(value, context)
+    return context[bytes].subarray(0, context[offset])
 }
 
-function encodeFloat64(/** @type number */ num) {
-    const dataView = new DataView(new ArrayBuffer(9))
-    dataView.setFloat64(1, num)
-    dataView.setUint8(0, 0xcb)
-    return new Uint8Array(dataView.buffer)
+function encodeFloat64(/** @type number */ value, /** @type EncodingContext */ encodingcontext) {
+    const bytearray = encodingcontext[bytes]
+    let encodingoffset = encodingcontext[offset]
+    ensureCapacity(bytearray, encodingoffset + 9)
+    bytearray[encodingoffset++] = 0xcb
+    const dataView = encodingcontext[dataview] ??= createDataView(encodingcontext)
+    dataView.setFloat64(encodingoffset, value)
+    encodingcontext[offset] = encodingoffset + 8
+    return
 }
 
-function encodeNumber(/** @type number */ num) {
+function encodeNumber(/** @type number */ num, /** @type EncodingContext */ encodingcontext) {
     if (!Number.isInteger(num)) { // float 64
-        return encodeFloat64(num)
+        return encodeFloat64(num, encodingcontext)
     }
+
+    const bytearray = encodingcontext[bytes]
+    let encodingoffset = encodingcontext[offset]
+    ensureCapacity(bytearray, encodingoffset + 5)
 
     if (num < 0) {
         if (num >= -FIVE_BITS) { // negative fixint
-            return new Uint8Array([num])
+            bytearray[encodingcontext[offset]++] = num
+            return
         }
 
         if (num >= -SEVEN_BITS) { // int 8
-            return new Uint8Array([0xd0, num])
+            bytearray[encodingoffset++] = 0xd0
+            bytearray[encodingoffset++] = num
+            encodingcontext[offset] = encodingoffset
+            return
         }
 
         if (num >= -FIFTEEN_BITS) { // int 16
-            const dataView = new DataView(new ArrayBuffer(3))
-            dataView.setInt16(1, num)
-            dataView.setUint8(0, 0xd1)
-            return new Uint8Array(dataView.buffer)
+            bytearray[encodingoffset++] = 0xd1
+            const dataView = encodingcontext[dataview] ??= createDataView(encodingcontext)
+            dataView.setInt16(encodingoffset, num)
+            encodingcontext[offset] = encodingoffset + 2
+            return
         }
 
         if (num >= -THIRTY_ONE_BITS) { // int 32
-            const dataView = new DataView(new ArrayBuffer(5))
-            dataView.setInt32(1, num)
-            dataView.setUint8(0, 0xd2)
-            return new Uint8Array(dataView.buffer)
+            bytearray[encodingoffset++] = 0xd2
+            const dataView = encodingcontext[dataview] ??= createDataView(encodingcontext)
+            dataView.setInt32(encodingoffset, num)
+            encodingcontext[offset] = encodingoffset + 4
+            return
         }
 
         // float 64
-        return encodeFloat64(num)
+        return encodeFloat64(num, encodingcontext)
     }
 
     // if the number fits within a positive fixint, use it
     if (num <= 0x7f) {
-        return new Uint8Array([num])
+        bytearray[encodingcontext[offset]++] = num
+        return
     }
 
     if (num < EIGHT_BITS) { // uint8
-        return new Uint8Array([0xcc, num])
+        bytearray[encodingoffset++] = 0xcc
+        bytearray[encodingoffset++] = num
+        encodingcontext[offset] = encodingoffset
+        return
     }
 
     if (num < SIXTEEN_BITS) { // uint16
-        const dataView = new DataView(new ArrayBuffer(3))
-        dataView.setUint16(1, num)
-        dataView.setUint8(0, 0xcd)
-        return new Uint8Array(dataView.buffer)
+        bytearray[encodingoffset++] = 0xcd
+        const dataView = encodingcontext[dataview] ??= createDataView(encodingcontext)
+        dataView.setUint16(encodingoffset, num)
+        encodingcontext[offset] = encodingoffset + 2
+        return
     }
 
     if (num < THIRTY_TWO_BITS) { // uint32
-        const dataView = new DataView(new ArrayBuffer(5))
-        dataView.setUint32(1, num)
-        dataView.setUint8(0, 0xce)
-        return new Uint8Array(dataView.buffer)
+        bytearray[encodingoffset++] = 0xce
+        const dataView = encodingcontext[dataview] ??= createDataView(encodingcontext)
+        dataView.setUint32(encodingoffset, num)
+        encodingcontext[offset] = encodingoffset + 4
+        return
     }
 
     // float 64
-    return encodeFloat64(num)
+    return encodeFloat64(num, encodingcontext)
 }
 
-function encodeSlice(/** @type ValueType */ object, /** @type Uint8Array[] */ byteParts) {
-    if (object === null) {
-        byteParts.push(new Uint8Array([0xc0]))
+function encodeSlice(/** @type ValueType */ value, /** @type EncodingContext */ encodingcontext) {
+    const bytearray = encodingcontext[bytes]
+
+    if (value === null) {
+        bytearray[encodingcontext[offset]++] = 0xc0
         return
     }
 
-    if (object === false) {
-        byteParts.push(new Uint8Array([0xc2]))
+    if (value === false) {
+        bytearray[encodingcontext[offset]++] = 0xc2
         return
     }
 
-    if (object === true) {
-        byteParts.push(new Uint8Array([0xc3]))
+    if (value === true) {
+        bytearray[encodingcontext[offset]++] = 0xc3
         return
     }
 
-    if (typeof object === "number") {
-        byteParts.push(encodeNumber(object))
+    if (typeof value === "number") {
+        encodeNumber(value, encodingcontext)
         return
     }
 
-    if (typeof object === "bigint") {
-        if (object < 0) {
-            if (object < -SIXTY_THREE_BITS) {
+    let encodingoffset = encodingcontext[offset]
+
+    if (typeof value === "bigint") {
+
+        const dataView = encodingcontext[dataview] ??= createDataView(encodingcontext)
+
+        if (value < 0n) {
+            if (value < -SIXTY_THREE_BITS) {
                 throw new Error("Cannot safely encode bigint larger than 64 bits")
             }
 
-            const dataView = new DataView(new ArrayBuffer(9))
-            dataView.setBigInt64(1, object)
-            dataView.setUint8(0, 0xd3)
-            byteParts.push(new Uint8Array(dataView.buffer))
+            bytearray[encodingoffset++] = 0xd3
+            dataView.setBigInt64(encodingoffset, value)
+            encodingcontext[offset] = encodingoffset + 8
             return
         }
 
-        if (object >= SIXTY_FOUR_BITS) {
+        if (value >= SIXTY_FOUR_BITS) {
             throw new Error("Cannot safely encode bigint larger than 64 bits")
         }
 
-        const dataView = new DataView(new ArrayBuffer(9))
-        dataView.setBigUint64(1, object)
-        dataView.setUint8(0, 0xcf)
-        byteParts.push(new Uint8Array(dataView.buffer))
+        bytearray[encodingoffset++] = 0xcf
+        dataView.setBigUint64(encodingoffset, value)
+        encodingcontext[offset] = encodingoffset + 8
         return
     }
 
-    if (typeof object === "string") {
-        const encoded = encoder.encode(object)
-        const len = encoded.length
-
-        if (len < FIVE_BITS) { // fixstr
-            byteParts.push(new Uint8Array([0xa0 | len]))
-        } else if (len < EIGHT_BITS) { // str 8
-            byteParts.push(new Uint8Array([0xd9, len]))
-        } else if (len < SIXTEEN_BITS) { // str 16
-            const dataView = new DataView(new ArrayBuffer(3))
-            dataView.setUint16(1, len)
-            dataView.setUint8(0, 0xda)
-            byteParts.push(new Uint8Array(dataView.buffer))
-        } else if (len < THIRTY_TWO_BITS) { // str 32
-            const dataView = new DataView(new ArrayBuffer(5))
-            dataView.setUint32(1, len)
-            dataView.setUint8(0, 0xdb)
-            byteParts.push(new Uint8Array(dataView.buffer))
+    if (typeof value === "string") {
+        const [
+            encoder,
+            stringbytes
+        ] = stringencodercontext ??= [
+            new TextEncoder(),
+            new Uint8Array(new ArrayBuffer(
+                Math.min(4096, value.length * 3),
+                { maxByteLength: 16 * 1024 * 1024 }
+            ))
+        ]
+        let { read, written,} = encoder.encodeInto(value, stringbytes)
+        if (read < value.length) {
+            ensureCapacity(stringbytes, written + (value.length - read) * 3)
+            const refill = encoder.encodeInto(value.slice(read), stringbytes.subarray(written))
+            read += refill.read
+            written += refill.written
+        }
+        ensureCapacity(bytearray, encodingoffset + 5)
+        if (written < FIVE_BITS) { // fixstr
+            bytearray[encodingoffset++] = 0xa0 | written
+        } else if (written < EIGHT_BITS) { // str 8
+            bytearray[encodingoffset++] = 0xd9
+            bytearray[encodingoffset++] = written
+        } else if (written < SIXTEEN_BITS) { // str 16
+            bytearray[encodingoffset++] = 0xda
+            const dataView = encodingcontext[dataview] ??= createDataView(encodingcontext)
+            dataView.setUint16(encodingoffset, written)
+            encodingoffset += 2
+        } else if (written < THIRTY_TWO_BITS) { // str 32
+            bytearray[encodingoffset++] = 0xdb
+            const dataView = encodingcontext[dataview] ??= createDataView(encodingcontext)
+            dataView.setUint32(encodingoffset, written)
+            encodingoffset += 4
         } else {
             throw new Error(
                 "Cannot safely encode string with size larger than 32 bits",
             )
         }
-        byteParts.push(encoded)
+        ensureCapacity(bytearray, encodingoffset + written)
+        bytearray.set(stringbytes.subarray(0, written), encodingoffset)
+        encodingcontext[offset] = encodingoffset + written
         return
     }
 
-    if (object instanceof Uint8Array) {
-        if (object.length < EIGHT_BITS) { // bin 8
-            byteParts.push(new Uint8Array([0xc4, object.length]))
-        } else if (object.length < SIXTEEN_BITS) { // bin 16
-            const dataView = new DataView(new ArrayBuffer(3))
-            dataView.setUint16(1, object.length)
-            dataView.setUint8(0, 0xc5)
-            byteParts.push(new Uint8Array(dataView.buffer))
-        } else if (object.length < THIRTY_TWO_BITS) { // bin 32
-            const dataView = new DataView(new ArrayBuffer(5))
-            dataView.setUint32(1, object.length)
-            dataView.setUint8(0, 0xc6)
-            byteParts.push(new Uint8Array(dataView.buffer))
+    if (value instanceof Uint8Array) {
+        if (value.length < EIGHT_BITS) { // bin 8
+            bytearray[encodingoffset++] = 0xc4
+            bytearray[encodingoffset++] = value.length
+        } else if (value.length < SIXTEEN_BITS) { // bin 16
+            bytearray[encodingoffset++] = 0xc5
+            const dataView = encodingcontext[dataview] ??= createDataView(encodingcontext)
+            dataView.setUint16(encodingoffset, value.length)
+            encodingoffset += 2
+        } else if (value.length < THIRTY_TWO_BITS) { // bin 32
+            bytearray[encodingoffset++] = 0xc6
+            const dataView = encodingcontext[dataview] ??= createDataView(encodingcontext)
+            dataView.setUint32(encodingoffset, value.length)
+            encodingoffset += 4
         } else {
             throw new Error(
                 "Cannot safely encode Uint8Array with size larger than 32 bits",
             )
         }
-        byteParts.push(object)
+        ensureCapacity(bytearray, encodingoffset + value.length)
+        bytearray.set(value, encodingoffset)
+        encodingcontext[offset] = encodingoffset + value.length
         return
     }
 
-    if (Array.isArray(object)) {
-        if (object.length < FOUR_BITS) { // fixarray
-            byteParts.push(new Uint8Array([0x90 | object.length]))
-        } else if (object.length < SIXTEEN_BITS) { // array 16
-            const dataView = new DataView(new ArrayBuffer(3))
-            dataView.setUint16(1, object.length)
-            dataView.setUint8(0, 0xdc)
-            byteParts.push(new Uint8Array(dataView.buffer))
-        } else if (object.length < THIRTY_TWO_BITS) { // array 32
-            const dataView = new DataView(new ArrayBuffer(5))
-            dataView.setUint32(1, object.length)
-            dataView.setUint8(0, 0xdd)
-            byteParts.push(new Uint8Array(dataView.buffer))
+    if (Array.isArray(value)) {
+        if (value.length < FOUR_BITS) { // fixarray
+            bytearray[encodingoffset++] = 0x90 | value.length
+        } else if (value.length < SIXTEEN_BITS) { // array 16
+            bytearray[encodingoffset++] = 0xdc
+            const dataView = encodingcontext[dataview] ??= createDataView(encodingcontext)
+            dataView.setUint16(encodingoffset, value.length)
+            encodingoffset += 2
+        } else if (value.length < THIRTY_TWO_BITS) { // array 32
+            bytearray[encodingoffset++] = 0xdd
+            const dataView = encodingcontext[dataview] ??= createDataView(encodingcontext)
+            dataView.setUint32(encodingoffset, value.length)
+            encodingoffset += 4
         } else {
             throw new Error(
                 "Cannot safely encode array with size larger than 32 bits",
             )
         }
 
-        for (const obj of object) {
-            encodeSlice(obj, byteParts)
+        encodingcontext[offset] = encodingoffset
+
+        for (const element of value) {
+            encodeSlice(element, encodingcontext)
         }
         return
     }
 
-    // If object is a plain object
-    const prototype = Object.getPrototypeOf(object)
+    // If value is a plain object
+    const prototype = Object.getPrototypeOf(value)
 
     if (prototype === null || prototype === Object.prototype) {
-        const numKeys = Object.keys(object).length
+        const numKeys = Object.keys(value).length
 
         if (numKeys < FOUR_BITS) { // fixarray
-            byteParts.push(new Uint8Array([0x80 | numKeys]))
+            bytearray[encodingoffset++] = 0x80 | numKeys
         } else if (numKeys < SIXTEEN_BITS) { // map 16
-            const dataView = new DataView(new ArrayBuffer(3))
-            dataView.setUint16(1, numKeys)
-            dataView.setUint8(0, 0xde)
-            byteParts.push(new Uint8Array(dataView.buffer))
+            bytearray[encodingoffset++] = 0xde
+            const dataView = encodingcontext[dataview] ??= createDataView(encodingcontext)
+            dataView.setUint16(encodingoffset, numKeys)
+            encodingoffset += 2
         } else if (numKeys < THIRTY_TWO_BITS) { // map 32
-            const dataView = new DataView(new ArrayBuffer(5))
-            dataView.setUint32(1, numKeys)
-            dataView.setUint8(0, 0xdf)
-            byteParts.push(new Uint8Array(dataView.buffer))
+            bytearray[encodingoffset++] = 0xdf
+            const dataView = encodingcontext[dataview] ??= createDataView(encodingcontext)
+            dataView.setUint32(encodingoffset, numKeys)
+            encodingoffset += 4
         } else {
             throw new Error("Cannot safely encode map with size larger than 32 bits")
         }
 
-        for (const [key, value] of Object.entries(object)) {
-            encodeSlice(key, byteParts)
-            encodeSlice(value, byteParts)
+        encodingcontext[offset] = encodingoffset
+
+        for (const key of Object.keys(value)) {
+            encodeSlice(key, encodingcontext)
+            encodeSlice(value[key], encodingcontext)
         }
         return
     }
 
     throw new Error("Cannot safely encode value into messagepack")
+}
+
+function ensureCapacity(/** @type Uint8Array */ bytes, /** @type number */ capacity) {
+    let newsize = bytes.byteLength
+    while (newsize < capacity) {
+        newsize *= 2
+    }
+    if (newsize > bytes.byteLength) {
+        bytes.buffer.resize(newsize)
+    }
+}
+
+function createDataView(/** @type EncodingContext */ encodingcontext) {
+    return new DataView(encodingcontext[bytes].buffer)
 }

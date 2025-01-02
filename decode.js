@@ -1,4 +1,4 @@
-/** @import type { ValueType } from "./encode.ts" */
+/** @import { ValueType } from "./types.d.ts" */
 
 /**
  * Decode a value from the [MessagePack](https://msgpack.org/) binary format.
