@@ -1,6 +1,12 @@
 /** @import { ValueType } from "./types.d.ts" */
 
 /**
+ * @typedef {[ consumed: number ]} DecodingContext
+ */
+
+const consumed = 0
+
+/**
  * Decode a value from the [MessagePack](https://msgpack.org/) binary format.
  *
  * If the input is not in valid message pack format, an error will be thrown.
@@ -19,15 +25,15 @@
  * @returns Decoded value from the MessagePack binary data.
  */
 export function decode(/** @type Uint8Array */ data) {
-    const pointer = { consumed: 0 }
+    const decodingcontext = [ 0 ]
     const dataView = new DataView(
         data.buffer,
         data.byteOffset,
         data.byteLength,
     )
-    const value = decodeSlice(data, dataView, pointer)
+    const value = decodeSlice(data, dataView, decodingcontext)
 
-    if (pointer.consumed < data.length) {
+    if (decodingcontext[consumed] < data.length) {
         throw new EvalError("Messagepack decode did not consume whole array")
     }
 
@@ -37,10 +43,10 @@ export function decode(/** @type Uint8Array */ data) {
 function decodeString(
     /** @type Uint8Array */ uint8,
     /** @type number */ size,
-    /** @type {{ consumed: number }} */ pointer,
+    /** @type DecodingContext */ decodingcontext,
 ) {
-    pointer.consumed += size
-    const u8 = uint8.subarray(pointer.consumed - size, pointer.consumed)
+    decodingcontext[consumed] += size
+    const u8 = uint8.subarray(decodingcontext[consumed] - size, decodingcontext[consumed])
     if (u8.length !== size) {
         throw new EvalError(
             "Messagepack decode reached end of array prematurely",
@@ -53,13 +59,13 @@ function decodeArray(
     /** @type Uint8Array */ uint8,
     /** @type DataView */ dataView,
     /** @type number */ size,
-    /** @type {{ consumed: number }} */ pointer,
+    /** @type DecodingContext */ decodingcontext,
 ) {
     /** @type ValueType[] */
     const arr = []
 
     for (let i = 0; i < size; i++) {
-        const value = decodeSlice(uint8, dataView, pointer)
+        const value = decodeSlice(uint8, dataView, decodingcontext)
         arr.push(value)
     }
 
@@ -70,14 +76,14 @@ function decodeMap(
     /** @type Uint8Array */ uint8,
     /** @type DataView */ dataView,
     /** @type number */ size,
-    /** @type {{ consumed: number }} */ pointer,
+    /** @type DecodingContext */ decodingcontext,
 ) {
     /** @type Record<number | string, ValueType> */
     const map = {}
 
     for (let i = 0; i < size; i++) {
-        const key = decodeSlice(uint8, dataView, pointer)
-        const value = decodeSlice(uint8, dataView, pointer)
+        const key = decodeSlice(uint8, dataView, decodingcontext)
+        const value = decodeSlice(uint8, dataView, decodingcontext)
 
         if (typeof key !== "number" && typeof key !== "string") {
             throw new EvalError(
@@ -109,13 +115,13 @@ const FIXSTR_MASK = 0b1110_0000
 function decodeSlice(
     /** @type Uint8Array */ uint8,
     /** @type DataView */ dataView,
-    /** @type {{ consumed: number }} */ pointer,
+    /** @type DecodingContext */ decodingcontext,
 ) {
-    if (pointer.consumed >= uint8.length) {
+    if (decodingcontext[consumed] >= uint8.length) {
         throw new EvalError("Messagepack decode reached end of array prematurely")
     }
-    const type = dataView.getUint8(pointer.consumed)
-    pointer.consumed++
+    const type = dataView.getUint8(decodingcontext[consumed])
+    decodingcontext[consumed]++
 
     if (type <= 0x7f) { // positive fixint - really small positive number
         return type
@@ -123,17 +129,17 @@ function decodeSlice(
 
     if ((type & FIXMAP_MASK) === FIXMAP_BITS) { // fixmap - small map
         const size = type & ~FIXMAP_MASK
-        return decodeMap(uint8, dataView, size, pointer)
+        return decodeMap(uint8, dataView, size, decodingcontext)
     }
 
     if ((type & FIXARRAY_MASK) === FIXARRAY_BITS) { // fixarray - small array
         const size = type & ~FIXARRAY_MASK
-        return decodeArray(uint8, dataView, size, pointer)
+        return decodeArray(uint8, dataView, size, decodingcontext)
     }
 
     if ((type & FIXSTR_MASK) === FIXSTR_BITS) { // fixstr - small string
         const size = type & ~FIXSTR_MASK
-        return decodeString(uint8, size, pointer)
+        return decodeString(uint8, size, decodingcontext)
     }
 
     if (type >= 0xe0) { // negative fixint - really small negative number
@@ -152,54 +158,54 @@ function decodeSlice(
         case 0xc3: // true
             return true
         case 0xc4: { // bin 8 - small Uint8Array
-            if (pointer.consumed >= uint8.length) {
+            if (decodingcontext[consumed] >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const length = dataView.getUint8(pointer.consumed)
-            pointer.consumed++
-            const u8 = uint8.subarray(pointer.consumed, pointer.consumed + length)
+            const length = dataView.getUint8(decodingcontext[consumed])
+            decodingcontext[consumed]++
+            const u8 = uint8.subarray(decodingcontext[consumed], decodingcontext[consumed] + length)
             if (u8.length !== length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            pointer.consumed += length
+            decodingcontext[consumed] += length
             return u8
         }
         case 0xc5: { // bin 16 - medium Uint8Array
-            if (pointer.consumed + 1 >= uint8.length) {
+            if (decodingcontext[consumed] + 1 >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const length = dataView.getUint16(pointer.consumed)
-            pointer.consumed += 2
-            const u8 = uint8.subarray(pointer.consumed, pointer.consumed + length)
+            const length = dataView.getUint16(decodingcontext[consumed])
+            decodingcontext[consumed] += 2
+            const u8 = uint8.subarray(decodingcontext[consumed], decodingcontext[consumed] + length)
             if (u8.length !== length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            pointer.consumed += length
+            decodingcontext[consumed] += length
             return u8
         }
         case 0xc6: { // bin 32 - large Uint8Array
-            if (pointer.consumed + 3 >= uint8.length) {
+            if (decodingcontext[consumed] + 3 >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const length = dataView.getUint32(pointer.consumed)
-            pointer.consumed += 4
-            const u8 = uint8.subarray(pointer.consumed, pointer.consumed + length)
+            const length = dataView.getUint32(decodingcontext[consumed])
+            decodingcontext[consumed] += 4
+            const u8 = uint8.subarray(decodingcontext[consumed], decodingcontext[consumed] + length)
             if (u8.length !== length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            pointer.consumed += length
+            decodingcontext[consumed] += length
             return u8
         }
         case 0xc7: // ext 8 - small extension type
@@ -209,103 +215,103 @@ function decodeSlice(
                 "Cannot decode a slice: Large extension type 'ext' not implemented yet",
             )
         case 0xca: { // float 32
-            if (pointer.consumed + 3 >= uint8.length) {
+            if (decodingcontext[consumed] + 3 >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const value = dataView.getFloat32(pointer.consumed)
-            pointer.consumed += 4
+            const value = dataView.getFloat32(decodingcontext[consumed])
+            decodingcontext[consumed] += 4
             return value
         }
         case 0xcb: { // float 64
-            if (pointer.consumed + 7 >= uint8.length) {
+            if (decodingcontext[consumed] + 7 >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const value = dataView.getFloat64(pointer.consumed)
-            pointer.consumed += 8
+            const value = dataView.getFloat64(decodingcontext[consumed])
+            decodingcontext[consumed] += 8
             return value
         }
         case 0xcc: { // uint 8
-            if (pointer.consumed >= uint8.length) {
+            if (decodingcontext[consumed] >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const value = dataView.getUint8(pointer.consumed)
-            pointer.consumed += 1
+            const value = dataView.getUint8(decodingcontext[consumed])
+            decodingcontext[consumed] += 1
             return value
         }
         case 0xcd: { // uint 16
-            if (pointer.consumed + 1 >= uint8.length) {
+            if (decodingcontext[consumed] + 1 >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const value = dataView.getUint16(pointer.consumed)
-            pointer.consumed += 2
+            const value = dataView.getUint16(decodingcontext[consumed])
+            decodingcontext[consumed] += 2
             return value
         }
         case 0xce: { // uint 32
-            if (pointer.consumed + 3 >= uint8.length) {
+            if (decodingcontext[consumed] + 3 >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const value = dataView.getUint32(pointer.consumed)
-            pointer.consumed += 4
+            const value = dataView.getUint32(decodingcontext[consumed])
+            decodingcontext[consumed] += 4
             return value
         }
         case 0xcf: { // uint 64
-            if (pointer.consumed + 7 >= uint8.length) {
+            if (decodingcontext[consumed] + 7 >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const value = dataView.getBigUint64(pointer.consumed)
-            pointer.consumed += 8
+            const value = dataView.getBigUint64(decodingcontext[consumed])
+            decodingcontext[consumed] += 8
             return value
         }
         case 0xd0: { // int 8
-            if (pointer.consumed >= uint8.length) {
+            if (decodingcontext[consumed] >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const value = dataView.getInt8(pointer.consumed)
-            pointer.consumed += 1
+            const value = dataView.getInt8(decodingcontext[consumed])
+            decodingcontext[consumed] += 1
             return value
         }
         case 0xd1: { // int 16
-            if (pointer.consumed + 1 >= uint8.length) {
+            if (decodingcontext[consumed] + 1 >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const value = dataView.getInt16(pointer.consumed)
-            pointer.consumed += 2
+            const value = dataView.getInt16(decodingcontext[consumed])
+            decodingcontext[consumed] += 2
             return value
         }
         case 0xd2: { // int 32
-            if (pointer.consumed + 3 >= uint8.length) {
+            if (decodingcontext[consumed] + 3 >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const value = dataView.getInt32(pointer.consumed)
-            pointer.consumed += 4
+            const value = dataView.getInt32(decodingcontext[consumed])
+            decodingcontext[consumed] += 4
             return value
         }
         case 0xd3: { // int 64
-            if (pointer.consumed + 7 >= uint8.length) {
+            if (decodingcontext[consumed] + 7 >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const value = dataView.getBigInt64(pointer.consumed)
-            pointer.consumed += 8
+            const value = dataView.getBigInt64(decodingcontext[consumed])
+            decodingcontext[consumed] += 8
             return value
         }
         case 0xd4: // fixext 1 - 1 byte extension type
@@ -315,74 +321,74 @@ function decodeSlice(
         case 0xd8: // fixext 16 - 16 byte extension type
             throw new Error("Cannot decode a slice: 'fixext' not implemented yet")
         case 0xd9: { // str 8 - small string
-            if (pointer.consumed >= uint8.length) {
+            if (decodingcontext[consumed] >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const length = dataView.getUint8(pointer.consumed)
-            pointer.consumed += 1
-            return decodeString(uint8, length, pointer)
+            const length = dataView.getUint8(decodingcontext[consumed])
+            decodingcontext[consumed] += 1
+            return decodeString(uint8, length, decodingcontext)
         }
         case 0xda: { // str 16 - medium string
-            if (pointer.consumed + 1 >= uint8.length) {
+            if (decodingcontext[consumed] + 1 >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const length = dataView.getUint16(pointer.consumed)
-            pointer.consumed += 2
-            return decodeString(uint8, length, pointer)
+            const length = dataView.getUint16(decodingcontext[consumed])
+            decodingcontext[consumed] += 2
+            return decodeString(uint8, length, decodingcontext)
         }
         case 0xdb: { // str 32 - large string
-            if (pointer.consumed + 3 >= uint8.length) {
+            if (decodingcontext[consumed] + 3 >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const length = dataView.getUint32(pointer.consumed)
-            pointer.consumed += 4
-            return decodeString(uint8, length, pointer)
+            const length = dataView.getUint32(decodingcontext[consumed])
+            decodingcontext[consumed] += 4
+            return decodeString(uint8, length, decodingcontext)
         }
         case 0xdc: { // array 16 - medium array
-            if (pointer.consumed + 1 >= uint8.length) {
+            if (decodingcontext[consumed] + 1 >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const length = dataView.getUint16(pointer.consumed)
-            pointer.consumed += 2
-            return decodeArray(uint8, dataView, length, pointer)
+            const length = dataView.getUint16(decodingcontext[consumed])
+            decodingcontext[consumed] += 2
+            return decodeArray(uint8, dataView, length, decodingcontext)
         }
         case 0xdd: { // array 32 - large array
-            if (pointer.consumed + 3 >= uint8.length) {
+            if (decodingcontext[consumed] + 3 >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const length = dataView.getUint32(pointer.consumed)
-            pointer.consumed += 4
-            return decodeArray(uint8, dataView, length, pointer)
+            const length = dataView.getUint32(decodingcontext[consumed])
+            decodingcontext[consumed] += 4
+            return decodeArray(uint8, dataView, length, decodingcontext)
         }
         case 0xde: { // map 16 - medium map
-            if (pointer.consumed + 1 >= uint8.length) {
+            if (decodingcontext[consumed] + 1 >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const length = dataView.getUint16(pointer.consumed)
-            pointer.consumed += 2
-            return decodeMap(uint8, dataView, length, pointer)
+            const length = dataView.getUint16(decodingcontext[consumed])
+            decodingcontext[consumed] += 2
+            return decodeMap(uint8, dataView, length, decodingcontext)
         }
         case 0xdf: { // map 32 - large map
-            if (pointer.consumed + 3 >= uint8.length) {
+            if (decodingcontext[consumed] + 3 >= uint8.length) {
                 throw new EvalError(
                     "Messagepack decode reached end of array prematurely",
                 )
             }
-            const length = dataView.getUint32(pointer.consumed)
-            pointer.consumed += 4
-            return decodeMap(uint8, dataView, length, pointer)
+            const length = dataView.getUint32(decodingcontext[consumed])
+            decodingcontext[consumed] += 4
+            return decodeMap(uint8, dataView, length, decodingcontext)
         }
     }
 
