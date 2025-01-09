@@ -59,7 +59,7 @@ export function encode(/** @type ValueType */ value) {
     /** @type EncodingContext */
     const context = [
         new Uint8Array(new ArrayBuffer(4096, {
-            maxByteLength: 16 * 1024 * 1024
+            maxByteLength: /* 256MB */ 256 * 1024 * 1024
         })),
         0,
         null
@@ -191,7 +191,7 @@ function encodeString(/** @type string */ value, /** @type EncodingContext */ en
         new TextEncoder(),
         new Uint8Array(new ArrayBuffer(
             Math.min(4096, value.length * 3),
-            { maxByteLength: 16 * 1024 * 1024 }
+            { maxByteLength: /* 16MB */ 16 * 1024 * 1024 }
         ))
     ]
     let { read, written,} = encoder.encodeInto(value, stringbytes)
